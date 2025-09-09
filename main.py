@@ -1,36 +1,94 @@
+
 import os
 import time
 from pathlib import Path
 from docx import Document
 import torch
-from shutil import copy2, rmtree
+from shutil import rmtree
 from TTS.api import TTS
 from TTS.utils.synthesizer import Synthesizer
-from tkinter import Tk
-from tkinter.filedialog import askopenfilename
+import io
+from contextlib import redirect_stdout
+import streamlit as st
+import psutil
+import re
 
+# =============================
+# CONSOLE STATUS / LOG HELPERS
+# =============================
+_last_standby_print = 0.0
+
+def _console(status: str, msg: str = ""):
+    """Simple console logger with timestamp and status flag."""
+    ts = time.strftime('%Y-%m-%d %H:%M:%S')
+    line = f"[{ts}] [{status.upper()}] {msg}"
+    try:
+        print(line, flush=True)
+    except Exception:
+        pass
+
+def _console_standby_throttled(msg: str, interval: float = 8.0):
+    """Avoid spamming STANDBY logs on Streamlit reruns."""
+    global _last_standby_print
+    now = time.time()
+    if now - _last_standby_print >= interval:
+        _console("STANDBY", msg)
+        _last_standby_print = now
+
+# =============================
+# GENERAL CONFIG
+# =============================
+# Process priority (Windows)
+p = psutil.Process(os.getpid())
+try:
+    p.nice(psutil.HIGH_PRIORITY_CLASS)  # or psutil.REALTIME_PRIORITY_CLASS
+except Exception:
+    pass
+
+# Required by Coqui TTS (accept terms)
 os.environ["COQUI_TOS_AGREED"] = "1"
 
-# Configuration parameters for the TTS model
+DEFAULT_MODEL = "tts_models/multilingual/multi-dataset/xtts_v2"
+DEFAULT_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+# Default output folder for generated audios
+DOWNLOAD_PATH = r"C:\\Users\\dud\\Downloads\\youtube\\VIAJENS\\AUDIOS_FEITOS"
+
+# Stores paragraphs that hit warning/limit
+flagged_paragraphs = []
+
+# =============================
+# UTILITIES
+# =============================
+
+def sanitize_name(name: str) -> str:
+    """Remove problematic characters from file/folder names."""
+    base = re.sub(r"[\\/:*?\"<>|]", "_", name)
+    base = re.sub(r"\s+", " ", base).strip()
+    return base
+
+
+def list_wav_files(folder: str):
+    try:
+        p = Path(folder)
+        if not p.exists():
+            return []
+        return [str(f.name) for f in p.glob("*.wav")]
+    except Exception:
+        return []
+
+
+# Custom sentence splitter: remove a single trailing dot from each sentence
 params = {
     "remove_trailing_dots": True,
-    "voice": "C:\\.wav",
-    "language": "en",
-    "model_name": "tts_models/multilingual/multi-dataset/xtts_v2",
-    "device": "cuda"  # Set to 'cpu' if CUDA is not available
+    "voice": "",  # set via UI
+    "language": "en",  # set via UI
+    "model_name": DEFAULT_MODEL,
+    "device": DEFAULT_DEVICE,
 }
 
-# Custom sentence splitting function to handle text preprocessing
+
 def new_split_into_sentences(self, text):
-    """
-    Split text into sentences and optionally remove trailing dots.
-    
-    Args:
-        text (str): Input text to be split into sentences
-        
-    Returns:
-        list: List of processed sentences
-    """
     sentences = self.seg.segment(text)
     if params['remove_trailing_dots']:
         sentences_without_dots = []
@@ -42,153 +100,215 @@ def new_split_into_sentences(self, text):
     else:
         return sentences
 
-# Override the original sentence splitting method
+# Apply override to the library
 Synthesizer.split_into_sentences = new_split_into_sentences
 
-# Initialize and load the TTS model
-def load_model():
-    """
-    Initialize the Text-to-Speech model with specified parameters.
-    
-    Returns:
-        TTS: Initialized TTS model instance
-    """
-    model = TTS(params["model_name"]).to(params["device"])
-    return model
 
-# Generate audio with real-time progress tracking
-def generate_audio_with_progress(text, output_path, model):
-    """
-    Generate audio from text with a progress bar display.
-    
-    Args:
-        text (str): Input text to convert to speech
-        output_path (str): Path where the audio file will be saved
-        model (TTS): Initialized TTS model instance
-    """
-    from threading import Thread, Event
+# =============================
+# MODEL LOADING
+# =============================
+@st.cache_resource(show_spinner=True)
+def load_model(model_name: str, device: str):
+    return TTS(model_name).to(device)
 
-    process_done_event = Event()
-    duration = 20  # Estimated duration - adjust as needed
-    start_time_global = time.time()
 
-    progress_thread = Thread(target=progress_bar, args=(duration, process_done_event, start_time_global))
-    progress_thread.start()
-
-    try:
-        model.tts_to_file(
-            text=text,
-            file_path=output_path,
-            speaker_wav=params["voice"],
-            language=params["language"]
-        )
-    finally:
-        process_done_event.set()
-        progress_thread.join()
-
-# Display real-time progress bar
-def progress_bar(duration, process_done_event, start_time_global):
-    """
-    Display a progress bar with timing information.
-    
-    Args:
-        duration (int): Estimated duration of the process
-        process_done_event (Event): Event to signal process completion
-        start_time_global (float): Start time of the entire process
-    """
-    print("Generating audio...")
-    start_time_local = time.time()
-
-    while not process_done_event.is_set():
-        current_time = time.time()
-        elapsed_time_local = int(current_time - start_time_local)
-        elapsed_time_global = int(current_time - start_time_global)
-        
-        elapsed_global_minutes = elapsed_time_global // 60
-        elapsed_global_seconds = elapsed_time_global % 60
-        elapsed_local_minutes = elapsed_time_local // 60
-        elapsed_local_seconds = elapsed_time_local % 60
-        
-        progress = min(int((elapsed_time_local / duration) * 50), 50)
-        bar = "[" + "=" * progress + " " * (50 - progress) + "]"
-        
-        print(f"\r{bar} {elapsed_local_minutes:02}:{elapsed_local_seconds:02} (Total: {elapsed_global_minutes:02}:{elapsed_global_seconds:02})", end="")
-        time.sleep(0.1)
-    
-    print("\nAudio generation completed successfully!")
-
-# Load and process the text document
+# =============================
+# DOCX READING
+# =============================
+@st.cache_data(show_spinner=False)
 def load_text(file_path):
-    """
-    Load and preprocess text from a Word document.
-    
-    Args:
-        file_path (str): Path to the Word document
-        
-    Returns:
-        list: List of processed paragraphs
-    """
     doc = Document(file_path)
+    # Replace '.' with ',.' to mitigate overly long sentence handling in some voices
     return [paragraph.text.replace('.', ',.') for paragraph in doc.paragraphs if paragraph.text.strip()]
 
+
 def generate_audio_filename(index):
-    """
-    Generate a filename for the audio output.
-    
-    Args:
-        index (int): Index of the current paragraph
-        
-    Returns:
-        str: Generated filename
-    """
     return f"audio_{index + 1}.wav"
 
-def main():
-    """
-    Main execution function that handles the TTS workflow:
-    1. File selection
-    2. Directory creation
-    3. Text processing
-    4. Audio generation
-    """
-    print("Please select the input file.")
-    root = Tk()
-    root.withdraw()
-    TEXT_FILE_PATH = askopenfilename(title="Select .docx file", filetypes=[("Word Documents", "*.docx")])
-    
-    if not TEXT_FILE_PATH:
-        print("No file selected. Exiting program.")
-        return
 
-    paragraphs = load_text(TEXT_FILE_PATH)
+# =============================
+# TTS WITH LOG CAPTURE
+# =============================
 
-    DOWNLOAD_PATH = r"C:\\"
-    new_folder_name = os.path.splitext(os.path.basename(TEXT_FILE_PATH))[0]
-    new_folder_path = os.path.join(DOWNLOAD_PATH, new_folder_name)
-    os.makedirs(new_folder_path, exist_ok=True)
-    print(f"Created folder: {new_folder_path}")
+def tts_to_file_logged(model, text: str, out_path: str, language: str, speaker_wav: str, speed: float = 0.85):
+    output_buffer = io.StringIO()
+    with redirect_stdout(output_buffer):
+        model.tts_to_file(
+            text=text,
+            file_path=out_path,
+            speaker_wav=speaker_wav,
+            language=language,
+            speed=speed,
+        )
+    return output_buffer.getvalue()
 
-    docx_filename = os.path.basename(TEXT_FILE_PATH)
-    docx_destination = os.path.join(new_folder_path, docx_filename)
-    try:
-        os.rename(TEXT_FILE_PATH, docx_destination)
-        print(f"DOCX file moved to: {docx_destination}")
-    except Exception as e:
-        print(f"Error moving DOCX file: {e}")
 
-    model = load_model()
+# =============================
+# STREAMLIT APP
+# =============================
 
-    for index, paragraph in enumerate(paragraphs):
-        output_file_name = generate_audio_filename(index)
-        output_file_path = os.path.join(new_folder_path, output_file_name)
+def main_app():
+    _console_standby_throttled("App started; listening for UI events...")
+    st.set_page_config(page_title="Travel Voiceover Generator (WEB)", layout="wide")
 
-        print(f"Generating audio for paragraph {index + 1}/{len(paragraphs)}...")
-        try:
-            generate_audio_with_progress(paragraph, output_file_path, model)
-        except Exception as e:
-            print(f"Error generating audio for {output_file_name}: {e}")
+    st.title("Travel Voiceover Generator (WEB)")
+    _console_standby_throttled("UI loaded; awaiting user action.")
+    st.caption("Now with language selection (EN/ES/PT), folder-based voice selection, and instant preview.")
 
-    print("Audio generation process completed!")
+    with st.sidebar:
+        st.subheader("Settings")
+
+        # Narration language
+        language = st.radio("Narration language", options=["en", "es", "pt"], index=0, horizontal=True)
+        params["language"] = language
+
+        # Voice folder path
+        default_voice_dir = r"C:\\Users\\dud\\Downloads\\youtube\\scripts\\voices"
+        voice_dir = st.text_input("Folder with reference voices (.wav)", value=default_voice_dir)
+        wavs = list_wav_files(voice_dir)
+        if not wavs:
+            st.warning("No .wav files found in this folder.")
+        else:
+            selected_wav_name = st.selectbox("Choose the voice (.wav file)", wavs)
+            selected_wav_path = str(Path(voice_dir) / selected_wav_name)
+            params["voice"] = selected_wav_path
+
+            # Voice preview: play the .wav itself
+            st.markdown("**Pre-listen of the selected voice**")
+            try:
+                with open(selected_wav_path, "rb") as f:
+                    st.audio(f.read(), format="audio/wav")
+            except Exception as e:
+                st.error(f"Failed to load voice preview: {e}")
+
+        # Model and device (optional)
+        with st.expander("Advanced options"):
+            params["model_name"] = st.text_input("Coqui model", value=params["model_name"])  # usually xtts_v2
+            params["device"] = st.selectbox("Device", ["cuda", "cpu"], index=0 if DEFAULT_DEVICE == "cuda" else 1)
+            remove_trailing = st.checkbox("Remove single trailing dot from sentences", value=True)
+            params["remove_trailing_dots"] = remove_trailing
+
+        # Output folder override (optional)
+        global DOWNLOAD_PATH
+        DOWNLOAD_PATH = st.text_input("Output base folder for generated audios", value=DOWNLOAD_PATH)
+
+    # DOCX upload
+    st.write("Upload a .docx file to generate audios with live logs.")
+    uploaded_file = st.file_uploader("Select the .docx file", type="docx")
+
+    # Quick TTS sample preview (without a DOCX)
+    st.divider()
+    st.markdown("### Quick test of the selected voice (TTS)")
+    sample_text = st.text_input("Sample text", value="This is a narration test.")
+    if st.button("Generate and play sample"):
+        _console("RUNNING", "Generating TTS sample with the selected voice...")
+        if not params.get("voice"):
+            st.error("Select a voice first.")
+        else:
+            with st.spinner("Generating sample..."):
+                model = load_model(params["model_name"], params["device"])  # cache_resource prevents reload
+                tmp_sample = Path("./_tmp_sample.wav")
+                try:
+                    _ = tts_to_file_logged(
+                        model,
+                        text=sample_text,
+                        out_path=str(tmp_sample),
+                        language=params["language"],
+                        speaker_wav=params["voice"],
+                        speed=0.9,
+                    )
+                    _console("RUNNING", "Sample generated successfully, playing...")
+                    with open(tmp_sample, "rb") as f:
+                        st.audio(f.read(), format="audio/wav")
+                finally:
+                    if tmp_sample.exists():
+                        tmp_sample.unlink(missing_ok=True)
+
+    st.divider()
+
+    if uploaded_file is not None:
+        _console("RUNNING", f"File received: {uploaded_file.name}. Preparing folders and loading paragraphs...")
+        # Use the real uploaded file name for the output folder
+        original_name = sanitize_name(uploaded_file.name)
+        base_name = os.path.splitext(original_name)[0]
+        lang_prefix = params["language"]  # 'en', 'es', or 'pt'
+        new_folder_name = f"{lang_prefix}_{base_name}"
+        new_folder_path = os.path.join(DOWNLOAD_PATH, new_folder_name)
+        os.makedirs(new_folder_path, exist_ok=True)
+
+        # Save the original DOCX into the created folder, preserving the original name
+        docx_destination = os.path.join(new_folder_path, original_name)
+        with open(docx_destination, "wb") as f:
+            f.write(uploaded_file.read())
+
+        st.success(f"Output folder created: {new_folder_path}")
+
+        # Load paragraphs
+        paragraphs = load_text(docx_destination)
+
+        # Load model (cached)
+        model = load_model(params["model_name"], params["device"])
+        _console("RUNNING", f"Model loaded ({params['model_name']} on {params['device']}). Starting audio generation...")
+
+        st.write("Starting audio generation...")
+        progress = st.progress(0)
+        log_placeholder = st.empty()
+        flagged_paragraphs.clear()
+        error_texts = []
+
+        for index, paragraph in enumerate(paragraphs):
+            output_file_name = generate_audio_filename(index)
+            output_file_path = os.path.join(new_folder_path, output_file_name)
+
+            st.write(f"Generating audio for paragraph {index + 1}/{len(paragraphs)}...")
+            _console("RUNNING", f"Paragraph {index + 1}/{len(paragraphs)}: generating file {output_file_name}...")
+
+            try:
+                log = tts_to_file_logged(
+                    model,
+                    text=paragraph,
+                    out_path=output_file_path,
+                    language=params["language"],
+                    speaker_wav=params["voice"],
+                    speed=0.85,
+                )
+                log_placeholder.code(log or "(no logs)")
+                _console("RUNNING", f"Paragraph {index + 1}/{len(paragraphs)} finished: {output_file_name}")
+            except Exception as e:
+                log_placeholder.error(f"Error generating audio for {output_file_name}: {e}")
+                _console("ERROR", f"Failed at paragraph {index + 1}/{len(paragraphs)} ({output_file_name}): {e}")
+                if "exceeds the character limit" in str(e).lower():
+                    error_texts.append(paragraph)
+                continue
+
+            # Check for character-limit warnings in stdout
+            if "exceeds the character limit" in (log or "").lower():
+                new_name = f"audio_{index + 1}__may have limit warning.wav"
+                new_path = os.path.join(new_folder_path, new_name)
+                try:
+                    os.rename(output_file_path, new_path)
+                except Exception:
+                    pass
+                flagged_paragraphs.append(paragraph)
+
+            progress.progress((index + 1) / max(1, len(paragraphs)))
+
+        # If there were problematic texts, save a docx report
+        if error_texts or flagged_paragraphs:
+            error_docx_path = os.path.join(new_folder_path, "paragraphs_with_limit_warnings.docx")
+            error_doc = Document()
+            for t in error_texts + flagged_paragraphs:
+                error_doc.add_paragraph(t)
+            error_doc.save(error_docx_path)
+            st.warning(f"Paragraphs with potential issues saved to: {error_docx_path}")
+
+        st.success("Audio generation completed!")
+        _console("DONE", "Generation finished. System on standby, waiting for the next action.")
+
+    # If no file was uploaded, log STANDBY in the console (with throttling)
+    if uploaded_file is None:
+        _console_standby_throttled("No active tasks. Waiting for DOCX upload, option changes, or button clicks.")
+
 
 if __name__ == "__main__":
-    main()
+    main_app()

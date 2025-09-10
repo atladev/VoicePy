@@ -22,81 +22,88 @@ Built as a Streamlit web app for fast preview and batch export.
   - TTS
   - tkinter
 
-## Installation
+## Quick start
 
-1. Clone this repository or download the script
-2. Install the required dependencies:
+> Requires **Python 3.10+**. CUDA is recommended but optional.
+
 ```bash
-pip install python-docx torch TTS
+# 1) Create and activate a virtual environment (recommended)
+python -m venv .venv
+# Windows
+.venv\Scripts\activate
+# macOS/Linux
+source .venv/bin/activate
+
+# 2) Install dependencies
+pip install streamlit torch python-docx psutil TTS==0.22.0
+
+# 3) (Optional) Accept Coqui TTS terms via env var
+#    You can also set this in your shell profile.
+set COQUI_TOS_AGREED=1    # Windows (cmd)
+$env:COQUI_TOS_AGREED=1   # Windows (PowerShell)
+export COQUI_TOS_AGREED=1 # macOS/Linux
+
+# 4) Run the app
+streamlit run web_travel_tts.py
 ```
 
-3. Place your reference voice file (.wav) in the appropriate directory and update the `params` configuration in the script:
-```python
-params = {
-    "remove_trailing_dots": True,
-    "voice": "C:\\.wav",  # Update this path
-    "language": "en",
-    "model_name": "tts_models/multilingual/multi-dataset/xtts_v2",
-    "device": "cuda"  # Use 'cpu' if CUDA is not available
-}
-```
+> If you use a GPU, ensure your PyTorch install matches your CUDA version. See the official PyTorch install matrix.
 
-## Usage
+## How to use
 
-1. Run the script:
-```bash
-python version_1.0.py
-```
+1. **Open the app** (`streamlit run web_travel_tts.py`).
+2. In the **sidebar**:
+   - Choose the **narration language** (`en`, `es`, `pt`).
+   - Point to a **folder with reference voices** (`.wav` files) and select one.
+   - (Advanced) Set the **Coqui model** (default `tts_models/multilingual/multi-dataset/xtts_v2`) and **device** (`cuda`/`cpu`).
+   - (Advanced) Toggle *Remove single trailing dot from sentences* if you prefer crisper stops.
+   - (Optional) Override the **output base folder**.
+3. Use **Quick test** to generate a short **sample** with the selected voice.
+4. **Upload your `.docx`**. Each paragraph becomes `audio_#.wav` inside:
+   ```
+   <OUTPUT_BASE>/<LANG>_<DOC_BASENAME>/
+   ```
+   The original `.docx` is also saved there.
+5. If any paragraph logs a **character-limit warning**, the corresponding file is renamed with a suffix:
+   ```
+   audio_# __may have limit warning.wav
+   ```
+   and a report file `paragraphs_with_limit_warnings.docx` is created in the same folder.
 
-2. When prompted, select your input .docx file using the file dialog
-3. The program will:
-   - Create a new folder named after your document
-   - Move the original document to this folder
-   - Generate audio files for each paragraph
-   - Display progress in real-time
+## Reference voice tips
 
-## Output
+- Use a **clean, noise-free** `.wav` that represents the voice you want.
+- **English**, **Spanish**, and **Portuguese** are supported via `xtts_v2`. Other languages may work, but are untested.
+- Results improve with **longer**, **higher-quality** reference audio (but avoid background music).
 
-- Audio files are generated in WAV format
-- Each paragraph gets its own audio file named `audio_X.wav` (where X is the paragraph number)
-- Files are organized in a folder named after the input document
+## Configuration
 
-## Technical Details
+- **Output base folder**: Default is a Windows path:
+  ```
+  C:\Users\
+  ```
+  You can change this in the sidebar.
+- **Voice folder** default:
+  ```
+  C:\Users\
+  ```
 
-### Text Processing
-- Custom sentence splitting algorithm
-- Handling of trailing dots and punctuation
-- Special character preprocessing
+## Troubleshooting
 
-### Audio Generation
-- Real-time progress tracking
-- Threading for progress display
-- Error handling for each paragraph
-- Support for multiple languages
+- **Torch / CUDA mismatch**: Reinstall PyTorch matching your CUDA version.
+- **No audio files generated**: Check the **stdout logs** area for errors.
+- **Long paragraphs**: If you see "exceeds the character limit", split the paragraph. The app will also flag and list them in the report.
+- **Performance**: GPU is strongly recommended for large documents.
 
-## Performance
+## Notes
 
-- GPU acceleration provides significant performance improvements
-- Progress tracking includes both local (per-paragraph) and global timing
-- Memory-efficient processing of large documents
+- This app **monkey-patches** the Coqui `Synthesizer.split_into_sentences` to optionally remove single trailing periods. Disable in the **Advanced options** if undesired.
+- The app replaces literal `.` with `,.` when reading `.docx` paragraphs to smooth phrasing on some voices. Adjust as needed.
 
-## Limitations
+## Acknowledgments
 
-- Requires sufficient disk space for audio output
-- Processing time depends on document length and hardware capabilities
-- Currently supports .docx format only
-
-## Error Handling
-
-The application includes robust error handling for:
-- File selection cancellation
-- File moving operations
-- Audio generation process
-- Resource management
-
-## Contributing
-
-Feel free to submit issues, fork the repository, and create pull requests for any improvements.
+- [Coqui TTS](https://github.com/coqui-ai/TTS)
+- [Streamlit](https://streamlit.io)
 
 ## License
 

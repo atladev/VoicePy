@@ -1,20 +1,17 @@
-# VoicePy
+# VoicePy (Streamlit + Coqui TTS)
 
-## Overview
-
-`VoicePy` is an AI-powered text-to-speech (TTS) synthesis tool designed to convert text from `.docx` documents into natural-sounding audio files. By leveraging advanced deep learning models, `VoicePy` delivers high-quality voice synthesis with customizable options for voice tone, language, and output configuration. 
-
-This tool is ideal for content creators, educators, and anyone looking to transform written text into audio efficiently.
+Generate clean voiceovers from a `.docx` script — one WAV per paragraph — using **Coqui TTS** with a **reference voice**.  
+Built as a Streamlit web app for fast preview and batch export.
 
 ## Features
 
-- Convert Word documents (.docx) to speech with advanced text preprocessing
-- Utilizes the XTTS v2 multilingual model for high-quality voice synthesis
-- Real-time progress tracking with visual progress bar
-- Automatic organization of output files in dedicated folders
-- GPU acceleration support (CUDA) for faster processing
-- Custom voice cloning capability using reference audio files
-
+- **Paragraph-to-file**: Upload a `.docx`; each non-empty paragraph becomes a separate `.wav`.
+- **Reference-voice cloning**: Point to a folder of `.wav` files and pick one as the speaker reference.
+- **Multi-language**: Works with **English**, **Spanish**, and **Portuguese** (via `xtts_v2`).
+- **Live logs**: Captures stdout from the TTS call and shows it inline.
+- **Safety for long sentences**: Optionally removes single trailing dots to reduce overly long sentence inflections.
+- **GPU-friendly**: Auto-detects CUDA; falls back to CPU.
+  
 ## Prerequisites
 
 - Python 3.x

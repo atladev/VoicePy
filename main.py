@@ -1,10 +1,9 @@
-
 import os
 import time
 from pathlib import Path
 from docx import Document
 import torch
-from shutil import rmtree
+from shutil import copy2, rmtree
 from TTS.api import TTS
 from TTS.utils.synthesizer import Synthesizer
 import io
@@ -19,7 +18,6 @@ import re
 _last_standby_print = 0.0
 
 def _console(status: str, msg: str = ""):
-    """Simple console logger with timestamp and status flag."""
     ts = time.strftime('%Y-%m-%d %H:%M:%S')
     line = f"[{ts}] [{status.upper()}] {msg}"
     try:
@@ -28,7 +26,7 @@ def _console(status: str, msg: str = ""):
         pass
 
 def _console_standby_throttled(msg: str, interval: float = 8.0):
-    """Avoid spamming STANDBY logs on Streamlit reruns."""
+    """Prints a standby log message at limited intervals."""
     global _last_standby_print
     now = time.time()
     if now - _last_standby_print >= interval:
@@ -36,39 +34,50 @@ def _console_standby_throttled(msg: str, interval: float = 8.0):
         _last_standby_print = now
 
 # =============================
-# GENERAL CONFIG
+# GENERAL CONFIGURATION
 # =============================
-# Process priority (Windows)
 p = psutil.Process(os.getpid())
 try:
-    p.nice(psutil.HIGH_PRIORITY_CLASS)  # or psutil.REALTIME_PRIORITY_CLASS
+    p.nice(psutil.HIGH_PRIORITY_CLASS)
 except Exception:
     pass
 
-# Required by Coqui TTS (accept terms)
 os.environ["COQUI_TOS_AGREED"] = "1"
 
 DEFAULT_MODEL = "tts_models/multilingual/multi-dataset/xtts_v2"
 DEFAULT_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-# Default output folder for generated audios
 DOWNLOAD_PATH = r"C:\\Users\\dud\\Downloads\\youtube\\VIAJENS\\AUDIOS_FEITOS"
+textos_com_erro = []
 
-# Stores paragraphs that hit warning/limit
-flagged_paragraphs = []
+# =============================
+# GLOBAL LOCK SYSTEM
+# =============================
+LOCK_FILE = Path("app_in_use.lock")
+
+def set_app_status(in_use: bool):
+    """Creates or removes a lock file to indicate system usage."""
+    if in_use:
+        LOCK_FILE.write_text("IN_USE")
+    else:
+        if LOCK_FILE.exists():
+            LOCK_FILE.unlink(missing_ok=True)
+
+def is_app_in_use() -> bool:
+    """Checks if the system is currently in use by another user."""
+    return LOCK_FILE.exists()
 
 # =============================
 # UTILITIES
 # =============================
-
 def sanitize_name(name: str) -> str:
-    """Remove problematic characters from file/folder names."""
+    """Cleans invalid characters from filenames."""
     base = re.sub(r"[\\/:*?\"<>|]", "_", name)
     base = re.sub(r"\s+", " ", base).strip()
     return base
 
-
 def list_wav_files(folder: str):
+    """Lists all .wav files inside a folder."""
     try:
         p = Path(folder)
         if not p.exists():
@@ -77,18 +86,16 @@ def list_wav_files(folder: str):
     except Exception:
         return []
 
-
-# Custom sentence splitter: remove a single trailing dot from each sentence
 params = {
     "remove_trailing_dots": True,
-    "voice": "",  # set via UI
-    "language": "en",  # set via UI
+    "voice": "",
+    "language": "pt",
     "model_name": DEFAULT_MODEL,
     "device": DEFAULT_DEVICE,
 }
 
-
 def new_split_into_sentences(self, text):
+    """Custom sentence splitter that removes single final dots."""
     sentences = self.seg.segment(text)
     if params['remove_trailing_dots']:
         sentences_without_dots = []
@@ -100,37 +107,43 @@ def new_split_into_sentences(self, text):
     else:
         return sentences
 
-# Apply override to the library
 Synthesizer.split_into_sentences = new_split_into_sentences
-
 
 # =============================
 # MODEL LOADING
 # =============================
 @st.cache_resource(show_spinner=True)
 def load_model(model_name: str, device: str):
+    """Loads and caches the Coqui TTS model."""
     return TTS(model_name).to(device)
 
+def flush_tts_cache():
+    """Forces clearing the current model from cache and GPU."""
+    try:
+        _console("FLUSH", "Clearing TTS model cache...")
+        st.cache_resource.clear()
+        torch.cuda.empty_cache()
+    except Exception as e:
+        _console("ERROR", f"Failed to clear cache: {e}")
 
 # =============================
 # DOCX READING
 # =============================
 @st.cache_data(show_spinner=False)
 def load_text(file_path):
+    """Reads all paragraphs from a .docx file and replaces periods."""
     doc = Document(file_path)
-    # Replace '.' with ',.' to mitigate overly long sentence handling in some voices
     return [paragraph.text.replace('.', ',.') for paragraph in doc.paragraphs if paragraph.text.strip()]
 
-
 def generate_audio_filename(index):
+    """Generates a sequential name for audio files."""
     return f"audio_{index + 1}.wav"
 
-
 # =============================
-# TTS WITH LOG CAPTURE
+# TTS GENERATION WITH LOG
 # =============================
-
 def tts_to_file_logged(model, text: str, out_path: str, language: str, speaker_wav: str, speed: float = 0.85):
+    """Generates speech audio and captures model logs."""
     output_buffer = io.StringIO()
     with redirect_stdout(output_buffer):
         model.tts_to_file(
@@ -142,73 +155,89 @@ def tts_to_file_logged(model, text: str, out_path: str, language: str, speaker_w
         )
     return output_buffer.getvalue()
 
-
 # =============================
 # STREAMLIT APP
 # =============================
-
 def main_app():
-    _console_standby_throttled("App started; listening for UI events...")
-    st.set_page_config(page_title="Travel Voiceover Generator (WEB)", layout="wide")
+    _console_standby_throttled("Application started...")
+    st.set_page_config(page_title="Travel Audio Generator (WEB)", layout="wide")
 
-    st.title("Travel Voiceover Generator (WEB)")
-    _console_standby_throttled("UI loaded; awaiting user action.")
-    st.caption("Now with language selection (EN/ES/PT), folder-based voice selection, and instant preview.")
+    # --- if the lock is old, remove it automatically ---
+    if is_app_in_use():
+        try:
+            mod_time = time.time() - LOCK_FILE.stat().st_mtime
+            if mod_time > 600:  # more than 10 minutes without activity? clear it.
+                LOCK_FILE.unlink(missing_ok=True)
+                _console("INFO", "Old lock automatically removed.")
+        except Exception:
+            pass
+
+    st.title("Gerador de Áudio de Viagem (WEB)")
+    st.caption("Now with simultaneous use blocking and voice switching fix.")
+
+    # ===================================
+    # ACTIVE USE WARNING (GLOBAL BANNER)
+    # ===================================
+    app_status_placeholder = st.empty()
+    # always starts as available
+    app_status_placeholder.markdown(
+        "<div style='background-color:#4CAF50;padding:10px;border-radius:8px;text-align:center;color:white;font-weight:bold;'>✅ Ready to use! No one is using it now.</div>",
+        unsafe_allow_html=True
+    )
 
     with st.sidebar:
         st.subheader("Settings")
 
-        # Narration language
-        language = st.radio("Narration language", options=["en", "es", "pt"], index=0, horizontal=True)
+        language = st.radio("Narration language", options=["pt", "es"], index=0, horizontal=True)
         params["language"] = language
 
-        # Voice folder path
         default_voice_dir = r"C:\\Users\\dud\\Downloads\\youtube\\scripts\\voices"
-        voice_dir = st.text_input("Folder with reference voices (.wav)", value=default_voice_dir)
+        voice_dir = st.text_input("Folder with voices (.wav)", value=default_voice_dir)
         wavs = list_wav_files(voice_dir)
+
         if not wavs:
             st.warning("No .wav files found in this folder.")
         else:
-            selected_wav_name = st.selectbox("Choose the voice (.wav file)", wavs)
+            selected_wav_name = st.selectbox("Choose a voice (.wav file)", wavs)
             selected_wav_path = str(Path(voice_dir) / selected_wav_name)
+
+            # If the selected voice changes, force model cache flush
+            if params.get("voice") and params["voice"] != selected_wav_path:
+                flush_tts_cache()
+
             params["voice"] = selected_wav_path
 
-            # Voice preview: play the .wav itself
-            st.markdown("**Pre-listen of the selected voice**")
+            st.markdown("**Preview of the selected voice**")
             try:
                 with open(selected_wav_path, "rb") as f:
                     st.audio(f.read(), format="audio/wav")
             except Exception as e:
-                st.error(f"Failed to load voice preview: {e}")
+                st.error(f"Error loading voice preview: {e}")
 
-        # Model and device (optional)
         with st.expander("Advanced options"):
-            params["model_name"] = st.text_input("Coqui model", value=params["model_name"])  # usually xtts_v2
+            params["model_name"] = st.text_input("Coqui model", value=params["model_name"])
             params["device"] = st.selectbox("Device", ["cuda", "cpu"], index=0 if DEFAULT_DEVICE == "cuda" else 1)
-            remove_trailing = st.checkbox("Remove single trailing dot from sentences", value=True)
-            params["remove_trailing_dots"] = remove_trailing
+            params["remove_trailing_dots"] = st.checkbox("Remove single final dot from sentences", value=True)
 
-        # Output folder override (optional)
-        global DOWNLOAD_PATH
-        DOWNLOAD_PATH = st.text_input("Output base folder for generated audios", value=DOWNLOAD_PATH)
-
-    # DOCX upload
-    st.write("Upload a .docx file to generate audios with live logs.")
-    uploaded_file = st.file_uploader("Select the .docx file", type="docx")
-
-    # Quick TTS sample preview (without a DOCX)
     st.divider()
-    st.markdown("### Quick test of the selected voice (TTS)")
-    sample_text = st.text_input("Sample text", value="This is a narration test.")
-    if st.button("Generate and play sample"):
-        _console("RUNNING", "Generating TTS sample with the selected voice...")
+
+    st.markdown("### Quick test for the selected voice (TTS)")
+    sample_text = st.text_input("Test text", value="Este é um teste de narração.")
+    if st.button("Generate test sample"):
         if not params.get("voice"):
             st.error("Select a voice first.")
+        elif is_app_in_use():
+            st.error("Another user is using it now. Wait for the green message.")
         else:
-            with st.spinner("Generating sample..."):
-                model = load_model(params["model_name"], params["device"])  # cache_resource prevents reload
-                tmp_sample = Path("./_tmp_sample.wav")
-                try:
+            set_app_status(True)
+            app_status_placeholder.markdown(
+                "<div style='background-color:#ff4d4d;padding:10px;border-radius:8px;text-align:center;color:white;font-weight:bold;'>🚫 Someone is using it! Please wait.</div>",
+                unsafe_allow_html=True
+            )
+            try:
+                with st.spinner("Generating sample..."):
+                    model = load_model(params["model_name"], params["device"])
+                    tmp_sample = Path("./_tmp_sample.wav")
                     _ = tts_to_file_logged(
                         model,
                         text=sample_text,
@@ -217,98 +246,98 @@ def main_app():
                         speaker_wav=params["voice"],
                         speed=0.9,
                     )
-                    _console("RUNNING", "Sample generated successfully, playing...")
                     with open(tmp_sample, "rb") as f:
                         st.audio(f.read(), format="audio/wav")
-                finally:
-                    if tmp_sample.exists():
-                        tmp_sample.unlink(missing_ok=True)
+            finally:
+                if tmp_sample.exists():
+                    tmp_sample.unlink(missing_ok=True)
+                set_app_status(False)
+                app_status_placeholder.markdown(
+                    "<div style='background-color:#4CAF50;padding:10px;border-radius:8px;text-align:center;color:white;font-weight:bold;'>✅ Ready to use! No one is using it now.</div>",
+                    unsafe_allow_html=True
+                )
 
     st.divider()
 
+    uploaded_file = st.file_uploader("Select the .docx file", type="docx")
     if uploaded_file is not None:
-        _console("RUNNING", f"File received: {uploaded_file.name}. Preparing folders and loading paragraphs...")
-        # Use the real uploaded file name for the output folder
-        original_name = sanitize_name(uploaded_file.name)
-        base_name = os.path.splitext(original_name)[0]
-        lang_prefix = params["language"]  # 'en', 'es', or 'pt'
-        new_folder_name = f"{lang_prefix}_{base_name}"
-        new_folder_path = os.path.join(DOWNLOAD_PATH, new_folder_name)
-        os.makedirs(new_folder_path, exist_ok=True)
+        if is_app_in_use():
+            st.error("Another user is generating audio now. Wait for the green message.")
+            return
 
-        # Save the original DOCX into the created folder, preserving the original name
-        docx_destination = os.path.join(new_folder_path, original_name)
-        with open(docx_destination, "wb") as f:
-            f.write(uploaded_file.read())
+        set_app_status(True)
+        app_status_placeholder.markdown(
+            "<div style='background-color:#ff4d4d;padding:10px;border-radius:8px;text-align:center;color:white;font-weight:bold;'>🚫 Someone is using it! Please wait.</div>",
+            unsafe_allow_html=True
+        )
 
-        st.success(f"Output folder created: {new_folder_path}")
+        try:
+            _console("RUNNING", f"Received file: {uploaded_file.name}")
+            original_name = sanitize_name(uploaded_file.name)
+            base_name = os.path.splitext(original_name)[0]
+            new_folder_name = f"{params['language']}_{base_name}"
+            new_folder_path = os.path.join(DOWNLOAD_PATH, new_folder_name)
+            os.makedirs(new_folder_path, exist_ok=True)
 
-        # Load paragraphs
-        paragraphs = load_text(docx_destination)
+            docx_destination = os.path.join(new_folder_path, original_name)
+            with open(docx_destination, "wb") as f:
+                f.write(uploaded_file.read())
 
-        # Load model (cached)
-        model = load_model(params["model_name"], params["device"])
-        _console("RUNNING", f"Model loaded ({params['model_name']} on {params['device']}). Starting audio generation...")
+            paragraphs = load_text(docx_destination)
+            model = load_model(params["model_name"], params["device"])
 
-        st.write("Starting audio generation...")
-        progress = st.progress(0)
-        log_placeholder = st.empty()
-        flagged_paragraphs.clear()
-        error_texts = []
+            st.write("Starting audio generation...")
+            progress = st.progress(0)
+            log_placeholder = st.empty()
+            textos_com_erro.clear()
+            error_texts = []
 
-        for index, paragraph in enumerate(paragraphs):
-            output_file_name = generate_audio_filename(index)
-            output_file_path = os.path.join(new_folder_path, output_file_name)
+            for index, paragraph in enumerate(paragraphs):
+                output_file_name = generate_audio_filename(index)
+                output_file_path = os.path.join(new_folder_path, output_file_name)
 
-            st.write(f"Generating audio for paragraph {index + 1}/{len(paragraphs)}...")
-            _console("RUNNING", f"Paragraph {index + 1}/{len(paragraphs)}: generating file {output_file_name}...")
-
-            try:
-                log = tts_to_file_logged(
-                    model,
-                    text=paragraph,
-                    out_path=output_file_path,
-                    language=params["language"],
-                    speaker_wav=params["voice"],
-                    speed=0.85,
-                )
-                log_placeholder.code(log or "(no logs)")
-                _console("RUNNING", f"Paragraph {index + 1}/{len(paragraphs)} finished: {output_file_name}")
-            except Exception as e:
-                log_placeholder.error(f"Error generating audio for {output_file_name}: {e}")
-                _console("ERROR", f"Failed at paragraph {index + 1}/{len(paragraphs)} ({output_file_name}): {e}")
-                if "exceeds the character limit" in str(e).lower():
-                    error_texts.append(paragraph)
-                continue
-
-            # Check for character-limit warnings in stdout
-            if "exceeds the character limit" in (log or "").lower():
-                new_name = f"audio_{index + 1}__may have limit warning.wav"
-                new_path = os.path.join(new_folder_path, new_name)
+                st.write(f"Generating audio for paragraph {index + 1}/{len(paragraphs)}...")
                 try:
-                    os.rename(output_file_path, new_path)
-                except Exception:
-                    pass
-                flagged_paragraphs.append(paragraph)
+                    log = tts_to_file_logged(
+                        model,
+                        text=paragraph,
+                        out_path=output_file_path,
+                        language=params["language"],
+                        speaker_wav=params["voice"],
+                        speed=0.85,
+                    )
+                    log_placeholder.code(log or "(no logs)")
+                except Exception as e:
+                    log_placeholder.error(f"Error generating audio: {e}")
+                    if "exceeds the character limit" in str(e).lower():
+                        error_texts.append(paragraph)
+                    continue
 
-            progress.progress((index + 1) / max(1, len(paragraphs)))
+                if "exceeds the character limit" in (log or "").lower():
+                    new_name = f"audio_{index + 1}__possible_error.wav"
+                    os.rename(output_file_path, os.path.join(new_folder_path, new_name))
+                    textos_com_erro.append(paragraph)
 
-        # If there were problematic texts, save a docx report
-        if error_texts or flagged_paragraphs:
-            error_docx_path = os.path.join(new_folder_path, "paragraphs_with_limit_warnings.docx")
-            error_doc = Document()
-            for t in error_texts + flagged_paragraphs:
-                error_doc.add_paragraph(t)
-            error_doc.save(error_docx_path)
-            st.warning(f"Paragraphs with potential issues saved to: {error_docx_path}")
+                progress.progress((index + 1) / len(paragraphs))
 
-        st.success("Audio generation completed!")
-        _console("DONE", "Generation finished. System on standby, waiting for the next action.")
+            if error_texts or textos_com_erro:
+                error_docx_path = os.path.join(new_folder_path, "paragraphs_with_error.docx")
+                error_doc = Document()
+                for t in error_texts + textos_com_erro:
+                    error_doc.add_paragraph(t)
+                error_doc.save(error_docx_path)
+                st.warning(f"Paragraphs with possible errors saved at: {error_docx_path}")
 
-    # If no file was uploaded, log STANDBY in the console (with throttling)
-    if uploaded_file is None:
-        _console_standby_throttled("No active tasks. Waiting for DOCX upload, option changes, or button clicks.")
+            st.success("Audio generation process completed!")
+        finally:
+            set_app_status(False)
+            app_status_placeholder.markdown(
+                "<div style='background-color:#4CAF50;padding:10px;border-radius:8px;text-align:center;color:white;font-weight:bold;'>✅ Ready to use! No one is using it now.</div>",
+                unsafe_allow_html=True
+            )
 
+    if uploaded_file is None and not is_app_in_use():
+        _console_standby_throttled("Waiting for user action.")
 
 if __name__ == "__main__":
     main_app()

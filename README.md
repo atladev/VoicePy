@@ -1,16 +1,23 @@
 # VoicePy (Streamlit + Coqui TTS)
 
-Generate clean voiceovers from a `.docx` script — one WAV per paragraph — using **Coqui TTS** with a **reference voice**.  
-Built as a Streamlit web app for fast preview and batch export.
+A web-based text-to-speech (TTS) application built with Streamlit and Coqui TTS, designed to convert .docx documents into natural-sounding audio files.
+It supports multilingual voice synthesis (Portuguese and Spanish), custom speaker voices, and real-time processing through a modern browser interface.
 
 ## Features
 
-- **Paragraph-to-file**: Upload a `.docx`; each non-empty paragraph becomes a separate `.wav`.
-- **Reference-voice cloning**: Point to a folder of `.wav` files and pick one as the speaker reference.
-- **Multi-language**: Works with **English**, **Spanish**, and **Portuguese** (via `xtts_v2`).
-- **Live logs**: Captures stdout from the TTS call and shows it inline.
-- **Safety for long sentences**: Optionally removes single trailing dots to reduce overly long sentence inflections.
-- **GPU-friendly**: Auto-detects CUDA; falls back to CPU.
+DOCX to Speech Conversion – Automatically reads and converts paragraphs from Word documents into .wav audio files.
+
+Multilingual Support – Easily switch between Portuguese and Spanish narration.
+
+Custom Voices – Select your own voice sample (.wav) for cloning and personalized narration.
+
+GPU Acceleration – Automatic CUDA detection for faster inference when available.
+
+Usage Lock System – Prevents simultaneous execution by multiple users.
+
+Error Handling & Logs – Detects long text issues and saves problematic paragraphs for review.
+
+Streamlit Web Interface – Simple, responsive, and ready for local or remote use.
   
 ## Prerequisites
 

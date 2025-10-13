@@ -5,19 +5,19 @@ It supports multilingual voice synthesis (Portuguese and Spanish), custom speake
 
 ## Features
 
-DOCX to Speech Conversion – Automatically reads and converts paragraphs from Word documents into .wav audio files.
+- DOCX to Speech Conversion – Automatically reads and converts paragraphs from Word documents into .wav audio files.
 
-Multilingual Support – Easily switch between Portuguese and Spanish narration.
+- Multilingual Support – Easily switch between Portuguese and Spanish narration.
 
-Custom Voices – Select your own voice sample (.wav) for cloning and personalized narration.
+- Custom Voices – Select your own voice sample (.wav) for cloning and personalized narration.
 
-GPU Acceleration – Automatic CUDA detection for faster inference when available.
+- GPU Acceleration – Automatic CUDA detection for faster inference when available.
 
-Usage Lock System – Prevents simultaneous execution by multiple users.
+- Usage Lock System – Prevents simultaneous execution by multiple users.
 
-Error Handling & Logs – Detects long text issues and saves problematic paragraphs for review.
+- Error Handling & Logs – Detects long text issues and saves problematic paragraphs for review.
 
-Streamlit Web Interface – Simple, responsive, and ready for local or remote use.
+- Streamlit Web Interface – Simple, responsive, and ready for local or remote use.
   
 ## Prerequisites
 

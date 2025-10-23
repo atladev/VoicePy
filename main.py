@@ -47,7 +47,7 @@ os.environ["COQUI_TOS_AGREED"] = "1"
 DEFAULT_MODEL = "tts_models/multilingual/multi-dataset/xtts_v2"
 DEFAULT_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-DOWNLOAD_PATH = r"C:\\Users\\dud\\Downloads\\youtube\\VIAJENS\\AUDIOS_FEITOS"
+DOWNLOAD_PATH = r"C:\\"
 textos_com_erro = []
 
 # =============================
@@ -191,7 +191,7 @@ def main_app():
         language = st.radio("Narration language", options=["pt", "es"], index=0, horizontal=True)
         params["language"] = language
 
-        default_voice_dir = r"C:\\Users\\dud\\Downloads\\youtube\\scripts\\voices"
+        default_voice_dir = r"C:\\"
         voice_dir = st.text_input("Folder with voices (.wav)", value=default_voice_dir)
         wavs = list_wav_files(voice_dir)
 

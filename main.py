@@ -191,7 +191,7 @@ def main_app():
         language = st.radio("Narration language", options=["pt", "es"], index=0, horizontal=True)
         params["language"] = language
 
-        default_voice_dir = r"C:\\"
+        default_voice_dir = r"C:\\..."
         voice_dir = st.text_input("Folder with voices (.wav)", value=default_voice_dir)
         wavs = list_wav_files(voice_dir)
 

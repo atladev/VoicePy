@@ -89,7 +89,7 @@ def list_wav_files(folder: str):
 params = {
     "remove_trailing_dots": True,
     "voice": "",
-    "language": "pt",
+    "language": "en",
     "model_name": DEFAULT_MODEL,
     "device": DEFAULT_DEVICE,
 }

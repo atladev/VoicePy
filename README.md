@@ -1,7 +1,6 @@
 # VoicePy (Streamlit + Coqui TTS)
 
-A web-based text-to-speech (TTS) application built with Streamlit and Coqui TTS, designed to convert .docx documents into natural-sounding audio files.
-It supports multilingual voice synthesis (Portuguese and Spanish), custom speaker voices, and real-time processing through a modern browser interface.
+A Streamlit and Coqui TTS web app designed to convert .docx documents into natural-sounding audio files.
 
 ## Features
 

@@ -2,9 +2,9 @@
 
 A Streamlit and Coqui TTS web app designed to convert .docx documents into natural-sounding audio files.
 
-## Features
+## Key Features
 
-- DOCX to Speech Conversion – Automatically reads and converts paragraphs from Word documents into .wav audio files.
+- DOCX to Speech Conversion – Reads and converts Word document paragraphs into high-quality .wav audio files.
 
 - Multilingual Support – Easily switch between Portuguese and Spanish narration.
 
